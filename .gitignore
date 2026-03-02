@@ -1,0 +1,12 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# data / outputs
+*.csv
+*.log
+*.save
+
+# mac
+.DS_Store
