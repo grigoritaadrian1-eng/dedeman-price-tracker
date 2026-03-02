@@ -4,12 +4,14 @@ import streamlit as st
 import plotly.express as px
 
 LOCAL_DATA = "dedeman_full_dataset_all.csv"
-REPORT = "dedeman_all_weekly_report.csv"
+
+# Optional: dacă există local (sau îl urci ulterior într-un storage), îl afișăm
+WEEKLY_REPORT_LOCAL = "dedeman_all_weekly_report.csv"
 
 st.set_page_config(page_title="Dedeman Tracker", layout="wide")
 st.title("Dedeman — Price Tracker (ALL 893)")
 
-# Ia DATA_URL din Streamlit Secrets (Cloud) sau din env (local), fallback pe fișier local
+# 1) Ia DATA_URL din Streamlit Secrets (Cloud) sau din env (local), fallback pe fișier local
 DATA_URL = ""
 try:
     DATA_URL = st.secrets.get("DATA_URL", "").strip()
@@ -19,7 +21,7 @@ except Exception:
 if not DATA_URL:
     DATA_URL = os.getenv("DATA_URL", "").strip()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)  # cache 1h
 def load_data():
     if DATA_URL:
         return pd.read_csv(DATA_URL)
@@ -50,6 +52,7 @@ def opts(col):
     s = s[~s.isin(["NA", "", "None", "nan"])]
     return sorted(s.unique())
 
+# Sidebar filters
 st.sidebar.header("Filtre")
 brand = st.sidebar.multiselect("Brand", opts("brand"))
 size = st.sidebar.multiselect("Dimensiune", opts("size"))
@@ -65,37 +68,87 @@ if finish: f = f[f["finish"].isin(finish)]
 if wear: f = f[f["wear_resistance"].isin(wear)]
 if avail: f = f[f["availability_status"].isin(avail)]
 
+# discount filter
 if only_discount and ("special_price" in f.columns) and ("price" in f.columns):
     p = pd.to_numeric(f["price"], errors="coerce")
     sp = pd.to_numeric(f["special_price"], errors="coerce")
     f = f[(sp.notna()) & (p.notna()) & (sp < p)]
 
+# KPIs
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Produse (filtrat)", len(f))
-k2.metric("Brand-uri", f["brand"].replace("NA", pd.NA).dropna().nunique())
-k3.metric("Dimensiuni", f["size"].replace("NA", pd.NA).dropna().nunique())
-k4.metric("Finisaje", f["finish"].replace("NA", pd.NA).dropna().nunique())
+k2.metric("Brand-uri", f["brand"].replace("NA", pd.NA).dropna().nunique() if "brand" in f.columns else 0)
+k3.metric("Dimensiuni", f["size"].replace("NA", pd.NA).dropna().nunique() if "size" in f.columns else 0)
+k4.metric("Finisaje", f["finish"].replace("NA", pd.NA).dropna().nunique() if "finish" in f.columns else 0)
 
+# Charts (2 coloane)
 c1, c2 = st.columns(2)
 with c1:
     st.subheader("Distribuție preț (RON)")
-    prices = pd.to_numeric(f["price"], errors="coerce").dropna()
+    prices = pd.to_numeric(f["price"], errors="coerce").dropna() if "price" in f.columns else pd.Series([])
     st.plotly_chart(px.histogram(prices, nbins=40), use_container_width=True)
 
 with c2:
     st.subheader("Disponibilitate (count)")
-    s = f["availability_status"].fillna("NA").value_counts().reset_index()
-    s.columns = ["availability_status", "count"]
-    st.plotly_chart(px.bar(s, x="availability_status", y="count"), use_container_width=True)
+    if "availability_status" in f.columns:
+        s = f["availability_status"].fillna("NA").value_counts().reset_index()
+        s.columns = ["availability_status", "count"]
+        st.plotly_chart(px.bar(s, x="availability_status", y="count"), use_container_width=True)
+    else:
+        st.info("Nu există availability_status în dataset.")
 
-st.subheader("Top branduri (după număr produse)")
-b = f["brand"].value_counts().reset_index()
-b.columns = ["brand", "count"]
-b = b[b["brand"] != "NA"].head(20)
-st.plotly_chart(px.bar(b, x="brand", y="count"), use_container_width=True)
+# Top branduri + Top dimensiuni (în 2 coloane)
+b1, b2 = st.columns(2)
 
+with b1:
+    st.subheader("Top branduri (după număr produse)")
+    if "brand" in f.columns:
+        b = f["brand"].value_counts().reset_index()
+        b.columns = ["brand", "count"]
+        b = b[b["brand"] != "NA"].head(20)
+        st.plotly_chart(px.bar(b, x="brand", y="count"), use_container_width=True)
+    else:
+        st.info("Nu există brand în dataset.")
+
+with b2:
+    st.subheader("Top dimensiuni (după număr produse)")
+    if "size" in f.columns:
+        sizes = f["size"].fillna("NA").astype(str).str.strip()
+        sizes = sizes[~sizes.isin(["NA", "", "None", "nan"])]
+        sz = sizes.value_counts().head(20).reset_index()
+        sz.columns = ["size", "count"]
+        st.plotly_chart(px.bar(sz, x="size", y="count"), use_container_width=True)
+    else:
+        st.info("Nu există size în dataset.")
+
+# Tabel produse
 st.subheader("Tabel produse")
 cols = [c for c in ["sku","brand","size","finish","wear_resistance","price","special_price","availability_status","url"] if c in f.columns]
 st.dataframe(f[cols], use_container_width=True, height=520)
+
+# Schimbări săptămânale (dacă există fișierul)
+st.divider()
+st.subheader("Schimbări săptămânale (vs last)")
+
+if os.path.exists(WEEKLY_REPORT_LOCAL):
+    rep = pd.read_csv(WEEKLY_REPORT_LOCAL)
+    st.write(f"Schimbări detectate: **{len(rep)}**")
+
+    if "delta_price" in rep.columns:
+        rep["delta_price"] = pd.to_numeric(rep["delta_price"], errors="coerce")
+
+    r1, r2 = st.columns(2)
+    with r1:
+        st.write("Top scăderi (20)")
+        st.dataframe(rep.sort_values("delta_price").head(20), use_container_width=True)
+    with r2:
+        st.write("Top creșteri (20)")
+        st.dataframe(rep.sort_values("delta_price").tail(20), use_container_width=True)
+else:
+    st.info(
+        "Nu există încă report-ul săptămânal în Cloud. "
+        "Îl poți genera local cu dedeman_all_weekly_history.py (după 2 rulări) "
+        "și apoi îl urcăm și pe el în Drive/alt storage, ca să apară aici."
+    )
 
 st.caption("Data source: " + (DATA_URL if DATA_URL else f"local file {LOCAL_DATA}"))
