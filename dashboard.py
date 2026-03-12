@@ -8,7 +8,7 @@ LOCAL_DATA = "dedeman_full_dataset_all.csv"
 st.set_page_config(page_title="Dedeman Tracker", layout="wide")
 st.title("Dedeman — Price Tracker (ALL 893)")
 
-# ----- Secrets / ENV -----
+# ---------- secrets / env ----------
 def get_secret(name: str) -> str:
     try:
         return str(st.secrets.get(name, "")).strip()
@@ -18,7 +18,7 @@ def get_secret(name: str) -> str:
 DATA_URL = get_secret("DATA_URL")
 REPORT_URL = get_secret("REPORT_URL")
 
-# ----- Loaders -----
+# ---------- loaders ----------
 @st.cache_data(ttl=3600)
 def load_data():
     if DATA_URL:
@@ -26,8 +26,7 @@ def load_data():
     if os.path.exists(LOCAL_DATA):
         return pd.read_csv(LOCAL_DATA)
     raise FileNotFoundError(
-        f"Nu găsesc {LOCAL_DATA} și nici DATA_URL nu e setat. "
-        f"Setează DATA_URL în Streamlit Secrets."
+        f"Nu găsesc {LOCAL_DATA} și nici DATA_URL nu e setat. Setează DATA_URL în Streamlit Secrets."
     )
 
 @st.cache_data(ttl=3600)
@@ -36,14 +35,14 @@ def load_report():
         return pd.read_csv(REPORT_URL)
     return None
 
-# ----- Load dataset -----
+# ---------- load main dataset ----------
 try:
     df = load_data()
 except Exception as e:
     st.error(str(e))
     st.stop()
 
-# normalize
+# normalize for filters
 for col in ["brand", "size", "finish", "wear_resistance", "availability_status"]:
     if col in df.columns:
         df[col] = df[col].astype(str).str.strip()
@@ -57,7 +56,7 @@ def opts(col):
     s = s[~s.isin(["NA", "", "None", "nan"])]
     return sorted(s.unique())
 
-# ----- Sidebar filters -----
+# ---------- sidebar filters ----------
 st.sidebar.header("Filtre")
 brand = st.sidebar.multiselect("Brand", opts("brand"))
 size = st.sidebar.multiselect("Dimensiune", opts("size"))
@@ -73,20 +72,19 @@ if finish: f = f[f["finish"].isin(finish)]
 if wear: f = f[f["wear_resistance"].isin(wear)]
 if avail: f = f[f["availability_status"].isin(avail)]
 
-# discount filter
 if only_discount and ("special_price" in f.columns) and ("price" in f.columns):
     p = pd.to_numeric(f["price"], errors="coerce")
     sp = pd.to_numeric(f["special_price"], errors="coerce")
     f = f[(sp.notna()) & (p.notna()) & (sp < p)]
 
-# ----- KPIs -----
+# ---------- KPIs ----------
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Produse (filtrat)", len(f))
 k2.metric("Brand-uri", f["brand"].replace("NA", pd.NA).dropna().nunique() if "brand" in f.columns else 0)
 k3.metric("Dimensiuni", f["size"].replace("NA", pd.NA).dropna().nunique() if "size" in f.columns else 0)
 k4.metric("Finisaje", f["finish"].replace("NA", pd.NA).dropna().nunique() if "finish" in f.columns else 0)
 
-# ----- Charts -----
+# ---------- charts ----------
 c1, c2 = st.columns(2)
 with c1:
     st.subheader("Distribuție preț (RON)")
@@ -125,12 +123,12 @@ with b2:
     else:
         st.info("Nu există size în dataset.")
 
-# ----- Table -----
+# ---------- main table ----------
 st.subheader("Tabel produse")
 cols = [c for c in ["sku","brand","size","finish","wear_resistance","price","special_price","availability_status","url"] if c in f.columns]
 st.dataframe(f[cols], use_container_width=True, height=520)
 
-# ----- Weekly changes (from REPORT_URL) -----
+# ---------- weekly report ----------
 st.divider()
 st.subheader("Schimbări săptămânale (vs last)")
 
@@ -138,18 +136,38 @@ rep = load_report()
 if rep is None:
     st.info("REPORT_URL nu e setat sau nu poate fi citit. Pune REPORT_URL în Secrets (Drive direct download).")
 else:
+    # enrich report with product details from main dataset
     st.write(f"Schimbări detectate: **{len(rep)}**")
+
+    # ensure sku types match
+    if "sku" in rep.columns and "sku" in df.columns:
+        rep = rep.copy()
+        rep["sku"] = rep["sku"].astype(str)
+        df_small_cols = [c for c in ["sku", "brand", "size", "finish", "wear_resistance", "url"] if c in df.columns]
+        df_small = df[df_small_cols].drop_duplicates(subset=["sku"]).copy()
+        df_small["sku"] = df_small["sku"].astype(str)
+        rep = rep.merge(df_small, on="sku", how="left")
 
     if "delta_price" in rep.columns:
         rep["delta_price"] = pd.to_numeric(rep["delta_price"], errors="coerce")
 
+    preferred = [
+        "sku", "brand", "size", "finish", "wear_resistance",
+        "price_old", "price_new", "delta_price",
+        "special_price_old", "special_price_new",
+        "availability_status_old", "availability_status_new",
+        "url"
+    ]
+    show_cols = [c for c in preferred if c in rep.columns]
+
     r1, r2 = st.columns(2)
     with r1:
         st.write("Top scăderi (20)")
-        st.dataframe(rep.sort_values("delta_price").head(20), use_container_width=True)
+        st.dataframe(rep.sort_values("delta_price").head(20)[show_cols], use_container_width=True)
+
     with r2:
         st.write("Top creșteri (20)")
-        st.dataframe(rep.sort_values("delta_price").tail(20), use_container_width=True)
+        st.dataframe(rep.sort_values("delta_price").tail(20)[show_cols], use_container_width=True)
 
 st.caption("Data source: " + (DATA_URL if DATA_URL else f"local file {LOCAL_DATA}"))
 if REPORT_URL:
