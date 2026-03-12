@@ -5,23 +5,21 @@ import plotly.express as px
 
 LOCAL_DATA = "dedeman_full_dataset_all.csv"
 
-# Optional: dacă există local (sau îl urci ulterior într-un storage), îl afișăm
-WEEKLY_REPORT_LOCAL = "dedeman_all_weekly_report.csv"
-
 st.set_page_config(page_title="Dedeman Tracker", layout="wide")
 st.title("Dedeman — Price Tracker (ALL 893)")
 
-# 1) Ia DATA_URL din Streamlit Secrets (Cloud) sau din env (local), fallback pe fișier local
-DATA_URL = ""
-try:
-    DATA_URL = st.secrets.get("DATA_URL", "").strip()
-except Exception:
-    DATA_URL = ""
+# ----- Secrets / ENV -----
+def get_secret(name: str) -> str:
+    try:
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return os.getenv(name, "").strip()
 
-if not DATA_URL:
-    DATA_URL = os.getenv("DATA_URL", "").strip()
+DATA_URL = get_secret("DATA_URL")
+REPORT_URL = get_secret("REPORT_URL")
 
-@st.cache_data(ttl=3600)  # cache 1h
+# ----- Loaders -----
+@st.cache_data(ttl=3600)
 def load_data():
     if DATA_URL:
         return pd.read_csv(DATA_URL)
@@ -32,6 +30,13 @@ def load_data():
         f"Setează DATA_URL în Streamlit Secrets."
     )
 
+@st.cache_data(ttl=3600)
+def load_report():
+    if REPORT_URL:
+        return pd.read_csv(REPORT_URL)
+    return None
+
+# ----- Load dataset -----
 try:
     df = load_data()
 except Exception as e:
@@ -52,7 +57,7 @@ def opts(col):
     s = s[~s.isin(["NA", "", "None", "nan"])]
     return sorted(s.unique())
 
-# Sidebar filters
+# ----- Sidebar filters -----
 st.sidebar.header("Filtre")
 brand = st.sidebar.multiselect("Brand", opts("brand"))
 size = st.sidebar.multiselect("Dimensiune", opts("size"))
@@ -74,14 +79,14 @@ if only_discount and ("special_price" in f.columns) and ("price" in f.columns):
     sp = pd.to_numeric(f["special_price"], errors="coerce")
     f = f[(sp.notna()) & (p.notna()) & (sp < p)]
 
-# KPIs
+# ----- KPIs -----
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Produse (filtrat)", len(f))
 k2.metric("Brand-uri", f["brand"].replace("NA", pd.NA).dropna().nunique() if "brand" in f.columns else 0)
 k3.metric("Dimensiuni", f["size"].replace("NA", pd.NA).dropna().nunique() if "size" in f.columns else 0)
 k4.metric("Finisaje", f["finish"].replace("NA", pd.NA).dropna().nunique() if "finish" in f.columns else 0)
 
-# Charts (2 coloane)
+# ----- Charts -----
 c1, c2 = st.columns(2)
 with c1:
     st.subheader("Distribuție preț (RON)")
@@ -97,9 +102,8 @@ with c2:
     else:
         st.info("Nu există availability_status în dataset.")
 
-# Top branduri + Top dimensiuni (în 2 coloane)
+# Brand + Size charts
 b1, b2 = st.columns(2)
-
 with b1:
     st.subheader("Top branduri (după număr produse)")
     if "brand" in f.columns:
@@ -121,17 +125,19 @@ with b2:
     else:
         st.info("Nu există size în dataset.")
 
-# Tabel produse
+# ----- Table -----
 st.subheader("Tabel produse")
 cols = [c for c in ["sku","brand","size","finish","wear_resistance","price","special_price","availability_status","url"] if c in f.columns]
 st.dataframe(f[cols], use_container_width=True, height=520)
 
-# Schimbări săptămânale (dacă există fișierul)
+# ----- Weekly changes (from REPORT_URL) -----
 st.divider()
 st.subheader("Schimbări săptămânale (vs last)")
 
-if os.path.exists(WEEKLY_REPORT_LOCAL):
-    rep = pd.read_csv(WEEKLY_REPORT_LOCAL)
+rep = load_report()
+if rep is None:
+    st.info("REPORT_URL nu e setat sau nu poate fi citit. Pune REPORT_URL în Secrets (Drive direct download).")
+else:
     st.write(f"Schimbări detectate: **{len(rep)}**")
 
     if "delta_price" in rep.columns:
@@ -144,11 +150,7 @@ if os.path.exists(WEEKLY_REPORT_LOCAL):
     with r2:
         st.write("Top creșteri (20)")
         st.dataframe(rep.sort_values("delta_price").tail(20), use_container_width=True)
-else:
-    st.info(
-        "Nu există încă report-ul săptămânal în Cloud. "
-        "Îl poți genera local cu dedeman_all_weekly_history.py (după 2 rulări) "
-        "și apoi îl urcăm și pe el în Drive/alt storage, ca să apară aici."
-    )
 
 st.caption("Data source: " + (DATA_URL if DATA_URL else f"local file {LOCAL_DATA}"))
+if REPORT_URL:
+    st.caption("Report source: " + REPORT_URL)
